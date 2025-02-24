@@ -1,0 +1,14 @@
+[package]
+name = "file_rw_test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+[[bin]]
+name = "writer"
+path = "src/writer.rs"
+
+[[bin]]
+name = "reader"
+path = "src/reader.rs"

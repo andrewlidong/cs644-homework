@@ -64,4 +64,14 @@ Not always.  File writes (write()) go through a kernel buffer before being flush
 
 11. (★★★) Find the location in the Linux kernel source code where a process's table of file descriptors is declared.
 
+In the Linux kernel, each process maintains a table of its open file descriptors. This table is managed through the files_struct structure, which is referenced within the process's task_struct.
+
+
 12. (★★★) What happens when one program is reading from a file while another program is writing? Formulate a hypothesis, then write a pair of programs to test it.
+
+When one program is reading from a file while another is writing, the behavior depends on OS buffering, file locks, and whether the writer is appending or overwriting:
+
+If the writer overwrites (O_TRUNC): the reader might see partial data or EOF before the file is completely rewritten.  
+The read() call could return inconsistent results if read during the writing process.  
+If the writer appends (O_APPEND): the reader might see the new data only after it has been wirten.  Depending on OS buffering, read() might return only old data until refreshed.  
+Without synchronization the reader and writer are indpenednet meaning race conditions could cause unpredictable results. The reader might read a mix of old and new data.  
