@@ -46,9 +46,21 @@ ENOENT: No such file or directory, trying to open a non-existent file in O_RDONL
 
 8. (★★) Modify your program from exercise 3 to read a file line-by-line.
 
-9.  (★★) Why does read return the number of bytes read? Why doesn't it just set buf to a null-terminated string, like other C functions?
+9.  (★★) Why does read return the number of bytes read? Why doesn't it just set buf to a null-terminated string, like other C functions?k
+
+The read() system call in C is low-level and unbuffered, meaning it simply copies raw bytes from a file descriptor into a buffer.  It does not process or interpret the data.  
+
+read() works with Binary Data, not just strings.  Returning the number of bytes read allows handling any data format.  
+
+It also supports partial reads.  Returning the byte count ensures correct handling of partial reads.  
+
+It leaves buffer management to the programmer.  
+
+Returning bytes read keeps read() fast and efficient.  
 
 10. (★★) If you call write, use lseek to rewind, and call read again, are you guaranteed to see the data you just wrote? Find the place in the man pages that describes Linux's behavior. Write a program to demonstrate it.
+
+Not always.  File writes (write()) go through a kernel buffer before being flushed to disk.  lseek(fd, 0, SEEK_SET) moves the file offset but does not flush the buffer.  If you call read() immediately after writing, you may not see the latest data unless the buffer is flushed.  
 
 11. (★★★) Find the location in the Linux kernel source code where a process's table of file descriptors is declared.
 
