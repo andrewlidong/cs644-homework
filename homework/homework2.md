@@ -28,9 +28,19 @@ O_APPEND moves to the end before each write.
 
 4. (★★) Final project (database): The very first version of your database simply stores key-value pairs to disk. Your program should have two commands: get and set. The set command takes a key and a value and writes it to disk, and the get command takes a key and prints the value, if it exists. You should store all data in a single file (it's okay to hard-code the path – users shouldn't look at the file directly). Use whatever data format you want. It's okay to make assumptions about the data if it simplifies your program (e.g., doesn't contain the | character so you can use that as a delimiter).
 
+(see rust_db/src/main.rs)
+
 5. (★★) Final project (web server): Web servers commonly log some details about incoming requests to a file. We're not ready to handle network requests, so this week we'll just do the logging. Your program should have two commands: run and count. The run command will append a line to a log file and exit. The count command should read the log file and print a count of the number of lines. You can format the log lines however you like, though generally they begin with a timestamp and include a descriptive message.
 
+(see web_logger/src/main.rs)
+
 6. (★★) EACCES, EEXIST, and ENOENT are three common errors that open can return. Read the description of these errors in man 2 open, and write a program that demonstrates each of them.
+
+There are three common errors that open() may return: 
+
+EACCESS: Permission denied, trying to open a file without read/write permissions.  
+EEXIST: File already exists, when using O_CREAT
+ENOENT: No such file or directory, trying to open a non-existent file in O_RDONLY mode.  
 
 7. (★★) Modify your program from exercise 3 to count the number of whitespace characters in the file. Try it out on /usr/share/cs644/bigfile.txt. Experiment with different chunk sizes. How does it affect the performance of your program? (Tip: Run time ./myprogram to measure the running time of your program.)
 
