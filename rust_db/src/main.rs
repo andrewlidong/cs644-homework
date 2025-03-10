@@ -1,37 +1,73 @@
-use std::fs::{OpenOptions, File};
+use std::fs::{OpenOptions, Permissions};
 use std::io::{Write, BufRead, BufReader};
 use std::env;
 use std::error::Error;
+use std::os::unix::fs::PermissionsExt;
+use fslock::LockFile;
+use std::thread;
+use std::time::Duration;
 
 /// Database file path
 const DB_FILE: &str = "db.txt";
+const LOCK_FILE: &str = "db.lock";
 
 /// Append a key-value pair to the database file
 fn set(key: &str, value: &str) -> Result<(), Box<dyn Error>> {
-    let mut file = OpenOptions::new().create(true).append(true).open(DB_FILE)?;
-
+    // First acquire the lock
+    let mut lock = LockFile::open(LOCK_FILE)?;
+    lock.lock()?;
+    
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(DB_FILE)?;
+    
+    // Set file permissions to 600 (owner read/write only)
+    file.set_permissions(Permissions::from_mode(0o600))?;
+    
+    // Simulate long-running operation
+    println!("Setting key: {}. Sleeping for 5 seconds...", key);
+    thread::sleep(Duration::from_secs(5));
+    
     writeln!(file, "{}|{}", key, value)?;
     println!("Set key: {}", key);
-
+    
+    // Release lock
+    lock.unlock()?;
+    
     Ok(())
 }
 
 /// Retrieve a value by key
 fn get(key: &str) -> Result<(), Box<dyn Error>> {
-    let file = File::open(DB_FILE)?;
+    // First acquire the lock
+    let mut lock = LockFile::open(LOCK_FILE)?;
+    lock.lock()?;
+    
+    let file = OpenOptions::new()
+        .read(true)
+        .open(DB_FILE)?;
+    
     let reader = BufReader::new(file);
-
+    let mut found = false;
+    
     for line in reader.lines() {
         let line = line?;
         let parts: Vec<&str> = line.splitn(2, '|').collect();
-
+        
         if parts.len() == 2 && parts[0] == key {
             println!("Value: {}", parts[1]);
-            return Ok(());
+            found = true;
+            break;
         }
     }
-
-    println!("Key not found.");
+    
+    if !found {
+        println!("Key not found.");
+    }
+    
+    // Release lock
+    lock.unlock()?;
     Ok(())
 }
 
