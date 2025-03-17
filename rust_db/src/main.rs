@@ -1,15 +1,17 @@
 use std::fs::{OpenOptions, Permissions};
-use std::io::{Write, BufRead, BufReader};
+use std::io::{self, Write, BufRead, BufReader, Read};
 use std::env;
 use std::error::Error;
 use std::os::unix::fs::PermissionsExt;
 use fslock::LockFile;
 use std::thread;
 use std::time::Duration;
+use std::process::exit;
 
 /// Database file path
 const DB_FILE: &str = "db.txt";
 const LOCK_FILE: &str = "db.lock";
+const TEMP_FILE: &str = "db.tmp";
 
 /// Append a key-value pair to the database file
 fn set(key: &str, value: &str) -> Result<(), Box<dyn Error>> {
@@ -71,20 +73,110 @@ fn get(key: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Delete a key from the database file
+fn delete(key: &str) -> Result<bool, Box<dyn Error>> {
+    // First acquire the lock
+    let mut lock = LockFile::open(LOCK_FILE)?;
+    lock.lock()?;
+
+    let mut deleted = false;
+    
+    // Open source file for reading
+    let file = OpenOptions::new()
+        .read(true)
+        .open(DB_FILE)?;
+    
+    // Create temporary file for writing
+    let mut temp_file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(TEMP_FILE)?;
+    
+    // Set temp file permissions to 600 (owner read/write only)
+    temp_file.set_permissions(Permissions::from_mode(0o600))?;
+    
+    let reader = BufReader::new(file);
+    
+    // Copy all lines except the one with matching key
+    for line in reader.lines() {
+        let line = line?;
+        let parts: Vec<&str> = line.splitn(2, '|').collect();
+        
+        if parts.len() == 2 && parts[0] == key {
+            deleted = true;
+            continue;
+        }
+        writeln!(temp_file, "{}", line)?;
+    }
+    
+    // Replace original file with temporary file
+    if deleted {
+        std::fs::rename(TEMP_FILE, DB_FILE)?;
+    } else {
+        std::fs::remove_file(TEMP_FILE)?;
+    }
+    
+    // Release lock
+    lock.unlock()?;
+    
+    Ok(deleted)
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();
 
-    if args.len() < 3 {
+    if args.len() < 2 {
         println!("Usage:");
         println!("   {} set <key> <value>", args[0]);
         println!("   {} get <key>", args[0]);
+        println!("   {} delete <key1> [key2] [key3] ...", args[0]);
         return Ok(());
     }
 
     match args[1].as_str() {
         "set" if args.len() == 4 => set(&args[2], &args[3])?,
         "get" if args.len() == 3 => get(&args[2])?,
-        _ => println!("Invalid command.  Use 'set' or 'get'."),
+        "delete" if args.len() >= 3 => {
+            let keys = &args[2..];
+            let mut child_processes = Vec::new();
+            
+            // Fork a child process for each key
+            for key in keys {
+                match unsafe { libc::fork() } {
+                    -1 => {
+                        eprintln!("Fork failed!");
+                        exit(1);
+                    }
+                    0 => {
+                        // Child process
+                        match delete(key) {
+                            Ok(true) => exit(0),   // Successfully deleted
+                            Ok(false) => exit(1),  // Key not found
+                            Err(_) => exit(2),     // Error occurred
+                        }
+                    }
+                    pid => {
+                        // Parent process
+                        child_processes.push((pid, key));
+                    }
+                }
+            }
+            
+            // Wait for all child processes to complete
+            for (pid, key) in child_processes {
+                let mut status = 0;
+                unsafe { libc::waitpid(pid, &mut status as *mut i32, 0) };
+                
+                let exit_status = status >> 8;
+                match exit_status {
+                    0 => println!("Successfully deleted key: {}", key),
+                    1 => println!("Key not found: {}", key),
+                    _ => println!("Error deleting key: {}", key),
+                }
+            }
+        }
+        _ => println!("Invalid command. Use 'set', 'get', or 'delete'."),
     }
 
     Ok(())
