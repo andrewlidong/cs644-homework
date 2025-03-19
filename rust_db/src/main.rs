@@ -1,305 +1,283 @@
-use std::fs::{OpenOptions, Permissions};
-use std::io::{self, Write, BufRead, BufReader, Read};
-use std::env;
-use std::error::Error;
-use std::os::unix::fs::PermissionsExt;
-use fslock::LockFile;
-use std::thread;
+use std::fs::File;
+use std::io::{self, Write, BufRead, BufReader, Seek, SeekFrom};
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
-use std::process::exit;
+use shared_memory::{Shmem, ShmemConf};
+use serde::{Serialize, Deserialize};
+use clap::{Parser, Subcommand};
+use libc::fork;
 
 /// Database file path
 const DB_FILE: &str = "db.txt";
-const LOCK_FILE: &str = "db.lock";
-const TEMP_FILE: &str = "db.tmp";
 
-/// Append a key-value pair to the database file
-fn set(key: &str, value: &str) -> Result<(), Box<dyn Error>> {
-    // First acquire the lock
-    let mut lock = LockFile::open(LOCK_FILE)?;
-    lock.lock()?;
-    
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(DB_FILE)?;
-    
-    // Set file permissions to 600 (owner read/write only)
-    file.set_permissions(Permissions::from_mode(0o600))?;
-    
-    // Simulate long-running operation
-    println!("Setting key: {}. Sleeping for 5 seconds...", key);
-    thread::sleep(Duration::from_secs(5));
-    
-    writeln!(file, "{}|{}", key, value)?;
-    println!("Set key: {}", key);
-    
-    // Release lock
-    lock.unlock()?;
-    
-    Ok(())
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
 }
 
-/// Retrieve a value by key
-fn get(key: &str) -> Result<(), Box<dyn Error>> {
-    // First acquire the lock
-    let mut lock = LockFile::open(LOCK_FILE)?;
-    lock.lock()?;
-    
-    let file = OpenOptions::new()
-        .read(true)
-        .open(DB_FILE)?;
-    
-    let reader = BufReader::new(file);
-    let mut found = false;
-    
-    for line in reader.lines() {
-        let line = line?;
-        let parts: Vec<&str> = line.splitn(2, '|').collect();
-        
-        if parts.len() == 2 && parts[0] == key {
-            println!("Value: {}", parts[1]);
-            found = true;
-            break;
+#[derive(Subcommand)]
+enum Commands {
+    /// Start the database server
+    Serve {
+        /// Number of child processes to spawn
+        #[arg(short, long, default_value_t = 4)]
+        workers: u32,
+    },
+    /// Run a single command and exit
+    Run {
+        /// Command to execute (get/set/delete)
+        #[arg(short, long)]
+        cmd: String,
+        /// Key for the command
+        #[arg(short, long)]
+        key: String,
+        /// Value for set command
+        #[arg(short, long)]
+        value: Option<String>,
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Entry {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Cache {
+    entries: Vec<Entry>,
+    dirty: bool,
+}
+
+pub struct DB {
+    path: PathBuf,
+    cache: Option<Arc<Shmem>>,
+}
+
+impl DB {
+    pub fn new(path: &str) -> io::Result<DB> {
+        let path = PathBuf::from(path);
+        // Create file if it doesn't exist
+        File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&path)?;
+        Ok(DB {
+            path,
+            cache: None,
+        })
+    }
+
+    pub fn with_cache(mut self, shmem: Shmem) -> Self {
+        self.cache = Some(Arc::new(shmem));
+        self
+    }
+
+    fn get_from_cache(&self, key: &str) -> io::Result<Option<String>> {
+        if let Some(cache) = &self.cache {
+            let cache_data = unsafe { &*(cache.as_ptr() as *const Cache) };
+            for entry in &cache_data.entries {
+                if entry.key == key {
+                    return Ok(Some(entry.value.clone()));
+                }
+            }
         }
+        Ok(None)
     }
-    
-    if !found {
-        println!("Key not found.");
-    }
-    
-    // Release lock
-    lock.unlock()?;
-    Ok(())
-}
 
-/// Delete a key from the database file
-fn delete(key: &str) -> Result<bool, Box<dyn Error>> {
-    // First acquire the lock
-    let mut lock = LockFile::open(LOCK_FILE)?;
-    lock.lock()?;
-
-    let mut deleted = false;
-    
-    // Open source file for reading
-    let file = OpenOptions::new()
-        .read(true)
-        .open(DB_FILE)?;
-    
-    // Create temporary file for writing
-    let mut temp_file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(TEMP_FILE)?;
-    
-    // Set temp file permissions to 600 (owner read/write only)
-    temp_file.set_permissions(Permissions::from_mode(0o600))?;
-    
-    let reader = BufReader::new(file);
-    
-    // Copy all lines except the one with matching key
-    for line in reader.lines() {
-        let line = line?;
-        let parts: Vec<&str> = line.splitn(2, '|').collect();
-        
-        if parts.len() == 2 && parts[0] == key {
-            deleted = true;
-            continue;
+    fn set_in_cache(&self, key: &str, value: &str) -> io::Result<()> {
+        if let Some(cache) = &self.cache {
+            let cache_data = unsafe { &mut *(cache.as_ptr() as *mut Cache) };
+            let mut found = false;
+            for entry in &mut cache_data.entries {
+                if entry.key == key {
+                    entry.value = value.to_string();
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                cache_data.entries.push(Entry {
+                    key: key.to_string(),
+                    value: value.to_string(),
+                });
+            }
+            cache_data.dirty = true;
         }
-        writeln!(temp_file, "{}", line)?;
+        Ok(())
     }
-    
-    // Replace original file with temporary file
-    if deleted {
-        std::fs::rename(TEMP_FILE, DB_FILE)?;
-    } else {
-        std::fs::remove_file(TEMP_FILE)?;
+
+    pub fn get(&self, key: &str) -> io::Result<Option<String>> {
+        // Try cache first
+        if let Some(value) = self.get_from_cache(key)? {
+            return Ok(Some(value));
+        }
+
+        // Fall back to file
+        let mut file = File::open(&self.path)?;
+        file.seek(SeekFrom::Start(0))?;
+        let reader = BufReader::new(&file);
+        for line in reader.lines() {
+            let line = line?;
+            if let Ok(entry) = serde_json::from_str::<Entry>(&line) {
+                if entry.key == key {
+                    return Ok(Some(entry.value));
+                }
+            }
+        }
+        Ok(None)
     }
-    
-    // Release lock
-    lock.unlock()?;
-    
-    Ok(deleted)
+
+    pub fn set(&mut self, key: &str, value: &str) -> io::Result<()> {
+        // Update cache
+        self.set_in_cache(key, value)?;
+
+        // Update file
+        let mut entries = Vec::new();
+        let mut file = File::open(&self.path)?;
+        file.seek(SeekFrom::Start(0))?;
+        let reader = BufReader::new(&file);
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                if let Ok(mut entry) = serde_json::from_str::<Entry>(&line) {
+                    if entry.key == key {
+                        entry.value = value.to_string();
+                    }
+                    entries.push(entry);
+                }
+            }
+        }
+
+        // Check if key exists
+        if !entries.iter().any(|e| e.key == key) {
+            entries.push(Entry {
+                key: key.to_string(),
+                value: value.to_string(),
+            });
+        }
+
+        // Write back to file
+        let mut file = File::create(&self.path)?;
+        for entry in entries {
+            writeln!(file, "{}", serde_json::to_string(&entry)?)?;
+        }
+        Ok(())
+    }
+
+    pub fn delete(&mut self, key: &str) -> io::Result<()> {
+        // Remove from cache
+        if let Some(cache) = &self.cache {
+            let cache_data = unsafe { &mut *(cache.as_ptr() as *mut Cache) };
+            cache_data.entries.retain(|e| e.key != key);
+            cache_data.dirty = true;
+        }
+
+        // Remove from file
+        let mut entries = Vec::new();
+        let mut file = File::open(&self.path)?;
+        file.seek(SeekFrom::Start(0))?;
+        let reader = BufReader::new(&file);
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                if let Ok(entry) = serde_json::from_str::<Entry>(&line) {
+                    if entry.key != key {
+                        entries.push(entry);
+                    }
+                }
+            }
+        }
+
+        let mut file = File::create(&self.path)?;
+        for entry in entries {
+            writeln!(file, "{}", serde_json::to_string(&entry)?)?;
+        }
+        Ok(())
+    }
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let args: Vec<String> = env::args().collect();
+fn main() -> io::Result<()> {
+    let cli = Cli::parse();
 
-    if args.len() < 2 {
-        println!("Usage:");
-        println!("   {} set <key> <value>", args[0]);
-        println!("   {} get <key>", args[0]);
-        println!("   {} delete <key1> [key2] [key3] ...", args[0]);
-        return Ok(());
-    }
-
-    match args[1].as_str() {
-        "set" if args.len() == 4 => set(&args[2], &args[3])?,
-        "get" if args.len() == 3 => get(&args[2])?,
-        "delete" if args.len() >= 3 => {
-            let keys = &args[2..];
-            let mut child_processes = Vec::new();
+    match cli.command {
+        Commands::Serve { workers } => {
+            // Create shared memory for cache
+            let shmem_conf = ShmemConf::new()
+                .size(1024 * 1024) // 1MB shared memory
+                .os_id("rust_db_cache");
             
-            // Fork a child process for each key
-            for key in keys {
-                match unsafe { libc::fork() } {
+            let shmem = shmem_conf.create().expect("Failed to create shared memory");
+            let cache_ptr = shmem.as_ptr() as *mut Cache;
+            
+            // Initialize cache
+            unsafe {
+                *cache_ptr = Cache {
+                    entries: Vec::new(),
+                    dirty: false,
+                };
+            }
+
+            // Create database instance with cache
+            let _db = DB::new(DB_FILE)?.with_cache(shmem);
+
+            // Fork child processes
+            for i in 0..workers {
+                let pid = unsafe { fork() };
+                match pid {
                     -1 => {
-                        eprintln!("Fork failed!");
-                        exit(1);
+                        eprintln!("Failed to fork: {}", std::io::Error::last_os_error());
+                        return Err(io::Error::new(io::ErrorKind::Other, "Fork failed"));
                     }
                     0 => {
                         // Child process
-                        match delete(key) {
-                            Ok(true) => exit(0),   // Successfully deleted
-                            Ok(false) => exit(1),  // Key not found
-                            Err(_) => exit(2),     // Error occurred
+                        println!("Worker {} running", i);
+                        // Keep the child process running
+                        loop {
+                            std::thread::sleep(Duration::from_secs(1));
                         }
                     }
                     pid => {
                         // Parent process
-                        child_processes.push((pid, key));
+                        println!("Started worker process {} with pid {}", i, pid);
                     }
                 }
             }
-            
-            // Wait for all child processes to complete
-            for (pid, key) in child_processes {
-                let mut status = 0;
-                unsafe { libc::waitpid(pid, &mut status as *mut i32, 0) };
-                
-                let exit_status = status >> 8;
-                match exit_status {
-                    0 => println!("Successfully deleted key: {}", key),
-                    1 => println!("Key not found: {}", key),
-                    _ => println!("Error deleting key: {}", key),
-                }
+
+            // Parent process keeps running
+            println!("Server running with {} workers", workers);
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
             }
         }
-        _ => println!("Invalid command. Use 'set', 'get', or 'delete'."),
+        Commands::Run { cmd, key, value } => {
+            let mut db = DB::new(DB_FILE)?;
+            match cmd.as_str() {
+                "get" => {
+                    if let Some(value) = db.get(&key)? {
+                        println!("{}", value);
+                    } else {
+                        println!("Key not found");
+                    }
+                }
+                "set" => {
+                    if let Some(value) = value {
+                        db.set(&key, &value)?;
+                        println!("Value set successfully");
+                    } else {
+                        println!("Value required for set command");
+                    }
+                }
+                "delete" => {
+                    db.delete(&key)?;
+                    println!("Key deleted successfully");
+                }
+                _ => println!("Unknown command"),
+            }
+        }
     }
 
     Ok(())
 }
-
-// use std::collections::HashMap;
-// use std::fs::{OpenOptions, File};
-// use std::io::{self, BufRead, Write};
-// use std::sync::Mutex;
-// use std::time::Instant;
-
-// #[derive(Clone)]
-// struct Entry {
-//     value: String,
-//     expires_at: Option<Instant>,
-// }
-
-// struct PersistentDatabase {
-//     store: Mutex<HashMap<String, Entry>>,
-//     file_path: String,
-// }
-
-// impl PersistentDatabase {
-//     fn new(file_path: &str) -> Self {
-//         let mut store = HashMap::new();
-//         if let Ok(file) = File::open(file_path) {
-//             for line in io::BufReader::new(file).lines() {
-//                 if let Ok(entry) = line {
-//                     let parts: Vec<&str> = entry.splitn(2, ',').collect();
-//                     if parts.len() == 2 {
-//                         store.insert(parts[0].to_string(), Entry {
-//                             value: parts[1].to_string(),
-//                             expires_at: None,
-//                         });
-//                     }
-//                 }
-//             }
-//         }
-
-//         PersistentDatabase {
-//             store: Mutex::new(store),
-//             file_path: file_path.to_string(),
-//         }
-//     }
-
-//     fn set(&self, key: String, value: String) {
-//         let mut db = self.store.lock().unwrap();
-//         let entry = Entry {
-//             value: value.clone(),
-//             expires_at: None,
-//         };
-//         db.insert(key.clone(), entry);
-
-//         let mut file = OpenOptions::new()
-//             .append(true)
-//             .create(true)
-//             .open(&self.file_path)
-//             .unwrap();
-//         writeln!(file, "{},{}", key, value).unwrap();
-//     }
-
-//     fn get(&self, key: &str) -> Option<Entry> {
-//         let db = self.store.lock().unwrap();
-//         db.get(key).cloned()
-//     }
-// }
-
-// fn main() {
-//     let db = PersistentDatabase::new("database.txt");
-
-//     db.set("language".to_string(), "Rust".to_string());
-//     if let Some(entry) = db.get("language") {
-//         println!("Stored value: {}", entry.value);
-//     }
-// }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use std::fs;
-
-//     #[test]
-//     fn test_set_and_get() {
-//         let test_file = "test_db.txt";
-//         let db = PersistentDatabase::new(test_file);
-        
-//         // Test setting and getting a value
-//         db.set("test_key".to_string(), "test_value".to_string());
-//         assert_eq!(db.get("test_key"), Some("test_value".to_string()));
-        
-//         // Clean up test file
-//         fs::remove_file(test_file).unwrap();
-//     }
-
-//     #[test]
-//     fn test_multiple_values() {
-//         let test_file = "test_db2.txt";
-//         let db = PersistentDatabase::new(test_file);
-        
-//         // Test multiple key-value pairs
-//         db.set("key1".to_string(), "value1".to_string());
-//         db.set("key2".to_string(), "value2".to_string());
-        
-//         assert_eq!(db.get("key1"), Some("value1".to_string()));
-//         assert_eq!(db.get("key2"), Some("value2".to_string()));
-//         assert_eq!(db.get("nonexistent"), None);
-        
-//         // Clean up test file
-//         fs::remove_file(test_file).unwrap();
-//     }
-
-//     #[test]
-//     fn test_value_update() {
-//         let test_file = "test_db3.txt";
-//         let db = PersistentDatabase::new(test_file);
-        
-//         // Test updating an existing key
-//         db.set("update_key".to_string(), "first_value".to_string());
-//         db.set("update_key".to_string(), "second_value".to_string());
-        
-//         assert_eq!(db.get("update_key"), Some("second_value".to_string()));
-        
-//         // Clean up test file
-//         fs::remove_file(test_file).unwrap();
-//     }
-// }
