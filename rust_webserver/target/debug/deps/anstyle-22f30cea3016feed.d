@@ -1,0 +1,10 @@
+/Users/andrewdong/Documents/2025/Recurse/cs644_homework/rust_webserver/target/debug/deps/libanstyle-22f30cea3016feed.rmeta: /Users/andrewdong/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-1.0.10/src/lib.rs /Users/andrewdong/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-1.0.10/src/macros.rs /Users/andrewdong/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-1.0.10/src/color.rs /Users/andrewdong/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-1.0.10/src/effect.rs /Users/andrewdong/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-1.0.10/src/reset.rs /Users/andrewdong/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-1.0.10/src/style.rs
+
+/Users/andrewdong/Documents/2025/Recurse/cs644_homework/rust_webserver/target/debug/deps/anstyle-22f30cea3016feed.d: /Users/andrewdong/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-1.0.10/src/lib.rs /Users/andrewdong/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-1.0.10/src/macros.rs /Users/andrewdong/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-1.0.10/src/color.rs /Users/andrewdong/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-1.0.10/src/effect.rs /Users/andrewdong/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-1.0.10/src/reset.rs /Users/andrewdong/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-1.0.10/src/style.rs
+
+/Users/andrewdong/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-1.0.10/src/lib.rs:
+/Users/andrewdong/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-1.0.10/src/macros.rs:
+/Users/andrewdong/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-1.0.10/src/color.rs:
+/Users/andrewdong/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-1.0.10/src/effect.rs:
+/Users/andrewdong/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-1.0.10/src/reset.rs:
+/Users/andrewdong/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstyle-1.0.10/src/style.rs:
